@@ -1,13 +1,227 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Redirecting...</title>
-  <script>
-    window.location.href = "https://script.google.com/macros/s/AKfycbw2lXss6hysPnVa0v8JB5AajKXd4DCbe7JMpUVG37yyK6ml8ye4SWW_XOghQZfKOnq0xQ/exec";
-  </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Firebase App</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar for the messages list */
+        #messages-list::-webkit-scrollbar {
+            width: 8px;
+        }
+        #messages-list::-webkit-scrollbar-thumb {
+            background-color: #9ca3af;
+            border-radius: 4px;
+        }
+    </style>
 </head>
-<body>
-  Redirecting...
+<body class="bg-gray-100 min-h-screen p-4 sm:p-8 font-sans">
+    
+    <!-- NOTE: This file must be placed inside the "public" directory 
+         for Firebase Hosting to deploy it correctly. -->
+
+    <div id="app-container" class="max-w-4xl mx-auto bg-white shadow-2xl rounded-xl p-6 md:p-10">
+        <h1 class="text-3xl font-extrabold text-blue-800 mb-6 border-b-2 pb-2">Real-Time Entry Tracker (Firebase RTDB)</h1>
+        <p class="text-sm text-gray-500 mb-6">Your unique user ID will be shown below. All entries are synced instantly across all open tabs/devices.</p>
+
+        <!-- Current User ID Display -->
+        <div class="mb-6 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <span class="font-semibold text-blue-600">Your User ID:</span>
+            <span id="user-id" class="ml-2 text-sm text-gray-700 font-mono">Signing in...</span>
+        </div>
+
+        <!-- Messages Area -->
+        <div class="grid md:grid-cols-2 gap-8">
+            
+            <!-- Message List -->
+            <div>
+                <h2 class="text-xl font-bold text-gray-700 mb-4">Recent Entries</h2>
+                <div id="messages-list" class="h-80 overflow-y-auto border border-gray-300 rounded-lg p-3 bg-gray-50 space-y-3">
+                    <p class="text-gray-500 text-center pt-10" id="loading-indicator">Loading entries...</p>
+                    <!-- Messages will be injected here -->
+                </div>
+            </div>
+
+            <!-- New Entry Form -->
+            <div>
+                <h2 class="text-xl font-bold text-gray-700 mb-4">Add New Entry</h2>
+                <form id="entry-form" class="bg-white p-6 rounded-lg shadow-inner border border-gray-200">
+                    <div class="mb-4">
+                        <label for="entry-name" class="block text-sm font-medium text-gray-700 mb-1">Your Name / Title</label>
+                        <input type="text" id="entry-name" name="name" required class="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div class="mb-6">
+                        <label for="entry-message" class="block text-sm font-medium text-gray-700 mb-1">Entry Message</label>
+                        <textarea id="entry-message" name="message" rows="3" required class="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 resize-none"></textarea>
+                    </div>
+                    <button type="submit" id="submit-button" class="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition duration-150 ease-in-out font-semibold shadow-md disabled:opacity-50">
+                        Submit Entry
+                    </button>
+                    <p id="status-message" class="text-center mt-3 text-sm hidden"></p>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    <script type="module">
+        // --- YOUR PASTED FIREBASE CONFIGURATION ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
+        import { getDatabase, ref, onValue, push, serverTimestamp, query, limitToLast } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-database.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
+
+        // IMPORTANT: Replace this placeholder config with your actual config object
+        const firebaseConfig = {
+            apiKey: "AIzaSyDclcDv-S2rxok2j58SJksxCwsbkQrP6xU",
+            authDomain: "flutter-ai-playground-ac544.firebaseapp.com",
+            databaseURL: "https://flutter-ai-playground-ac544-default-rtdb.firebaseio.com",
+            projectId: "flutter-ai-playground-ac544",
+            storageBucket: "flutter-ai-playground-ac544.firebasestorage.app",
+            messagingSenderId: "477288910886",
+            appId: "1:477288910886:web:1fc72a7981a72174c016e7"
+        };
+
+        // --- FIREBASE INITIALIZATION & AUTHENTICATION ---
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        const auth = getAuth(app);
+        
+        const userIdSpan = document.getElementById('user-id');
+        const form = document.getElementById('entry-form');
+        const submitButton = document.getElementById('submit-button');
+        const statusMessage = document.getElementById('status-message');
+        const messagesList = document.getElementById('messages-list');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        
+        let currentUserId = null;
+
+        // 1. Handle Authentication (Anonymous Sign-In)
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                // User is signed in (or anonymously signed in)
+                currentUserId = user.uid;
+                userIdSpan.textContent = currentUserId;
+                
+                // 2. Once authenticated, start listening for data
+                setupRealtimeListener(currentUserId);
+
+            } else {
+                // User is signed out, sign them in anonymously
+                userIdSpan.textContent = 'Attempting sign-in...';
+                signInAnonymously(auth)
+                    .catch((error) => {
+                        console.error("Anonymous Sign-In Failed:", error);
+                        userIdSpan.textContent = 'Authentication Failed!';
+                        submitButton.disabled = true;
+                    });
+            }
+        });
+
+        // --- REAL-TIME DATA LISTENER ---
+
+        function setupRealtimeListener(uid) {
+            // Get a reference to the 'entries' path
+            const entriesRef = ref(db, 'entries');
+            
+            // Create a query to limit to the last 20 entries for performance
+            const recentEntriesQuery = query(entriesRef, limitToLast(20));
+
+            // Set up the real-time listener (onValue)
+            onValue(recentEntriesQuery, (snapshot) => {
+                
+                // Clear the list and hide the loading indicator
+                messagesList.innerHTML = '';
+                loadingIndicator.classList.add('hidden');
+                
+                if (snapshot.exists()) {
+                    const entries = snapshot.val();
+                    const entryKeys = Object.keys(entries).reverse(); // Reverse for newest on top
+                    
+                    entryKeys.forEach(key => {
+                        const entry = entries[key];
+                        
+                        // Create the UI element for each entry
+                        const entryElement = document.createElement('div');
+                        entryElement.className = `p-3 rounded-lg shadow-sm border ${entry.userId === uid ? 'bg-blue-100 border-blue-300' : 'bg-white border-gray-200'}`;
+                        
+                        // Format timestamp
+                        const date = entry.timestamp ? new Date(entry.timestamp) : new Date();
+                        const timeString = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                        const dateString = date.toLocaleDateString();
+
+                        entryElement.innerHTML = `
+                            <div class="flex justify-between items-start mb-1">
+                                <span class="font-bold text-gray-900">${entry.name || 'Anonymous'}</span>
+                                <span class="text-xs text-gray-500">${timeString} - ${dateString}</span>
+                            </div>
+                            <p class="text-sm text-gray-700 break-words">${entry.message}</p>
+                            <p class="text-xs text-gray-400 mt-1">User: ${entry.userId.substring(0, 8)}...</p>
+                        `;
+
+                        // Add the new message to the top of the list
+                        messagesList.prepend(entryElement);
+                    });
+                } else {
+                    messagesList.innerHTML = '<p class="text-center text-gray-500 mt-5">No entries yet! Be the first.</p>';
+                }
+            }, (error) => {
+                console.error("Realtime Listener Error:", error);
+                messagesList.innerHTML = `<p class="text-center text-red-500 mt-5">Error loading data: ${error.message}</p>`;
+            });
+        }
+
+        // --- DATA SUBMISSION HANDLER ---
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (!currentUserId) {
+                showStatus('Error: Not authenticated. Please refresh.', 'text-red-600');
+                return;
+            }
+
+            submitButton.disabled = true;
+            submitButton.textContent = 'Sending...';
+            statusMessage.classList.remove('hidden');
+            statusMessage.textContent = '';
+            
+            const name = document.getElementById('entry-name').value;
+            const message = document.getElementById('entry-message').value;
+
+            // Data object to save
+            const newEntry = {
+                name: name,
+                message: message,
+                timestamp: serverTimestamp(), // Use Firebase's server time
+                userId: currentUserId
+            };
+
+            try {
+                // Push the data to the 'entries' path. Firebase automatically generates a unique key.
+                await push(ref(db, 'entries'), newEntry);
+                
+                showStatus('Entry submitted successfully!', 'text-green-600');
+                form.reset(); // Clear the form on success
+
+            } catch (error) {
+                console.error("Error writing to database:", error);
+                showStatus(`Error: ${error.message}`, 'text-red-600');
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = 'Submit Entry';
+            }
+        });
+        
+        function showStatus(message, colorClass) {
+            statusMessage.textContent = message;
+            statusMessage.className = `text-center mt-3 text-sm ${colorClass}`;
+            setTimeout(() => {
+                statusMessage.classList.add('hidden');
+            }, 5000);
+        }
+
+    </script>
 </body>
 </html>
